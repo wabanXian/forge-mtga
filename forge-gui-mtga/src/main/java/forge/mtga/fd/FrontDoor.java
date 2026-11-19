@@ -295,7 +295,7 @@ public final class FrontDoor {
         on("GetAllPreferredPrintings", (s, r) -> "{}");
         on("MercGetStoreStatusV2", (s, r) -> obj("DisabledTags", new JsonArray(), "DisabledListings", new JsonArray(),
                 "CodeRedemptionEnabled", false, "StoreEnabled", false));
-        // daily quests from the coordinator (DailyQuests, QuestService); offline: none
+        // daily quests from the coordinator online or mastery-offline.json offline (DailyQuests, QuestService)
         on("QuestGetQuests", (s, r) -> quests.enabled() ? quests.collection() : obj("canSwap", false, "newQuests", 0, "quests", new JsonArray()));
         on("QuestSwapQuest", (s, r) -> quests.enabled() ? quests.swap(str(r.obj(), "QuestId")) : new Err(ERR_NOT_IMPLEMENTED, "no quests offline"));
         on("PeriodicRewardsGetStatus", (s, r) -> obj("_dailyRewardSequenceId", 0, "_dailyRewardResetTimestamp", "2099-01-01T00:00:00Z",
@@ -422,7 +422,7 @@ public final class FrontDoor {
     private volatile forge.mtga.social.MasteryService mastery = new forge.mtga.social.MasteryService(null, null, null);
     private volatile MasteryTrack masteryTrack = new MasteryTrack(mastery);
 
-    /** The mastery track from the coordinator (set by the server main when online play is on; offline: everything owned, no track). */
+    /** The mastery track from the coordinator online or mastery-offline.json offline. */
     public void setMastery(forge.mtga.social.MasteryService m) {
         mastery = m;
         masteryTrack = new MasteryTrack(m);
@@ -430,7 +430,7 @@ public final class FrontDoor {
 
     private volatile DailyQuests quests = new DailyQuests(new forge.mtga.social.QuestService(null));
 
-    /** The daily quests from the coordinator (set by the server main when online play is on; offline: none). */
+    /** The daily quests from the coordinator online or mastery-offline.json offline. */
     public void setQuests(forge.mtga.social.QuestService q) { quests = new DailyQuests(q); }
 
     /** Local bot matches of this run: match id -> event (the quests count the format of the queue). */
@@ -460,7 +460,7 @@ public final class FrontDoor {
         forge.mtga.social.RankService rs = rank;
         DailyQuests qs = quests;
         String event = online ? onlineMatches.get(matchId) : botMatches.get(matchId);
-        if (!(online || bot) || !ms.online()) return report;
+        if (!(online || bot)) return report;
         java.util.concurrent.CompletableFuture<JsonObject> wait = rewardWaits.computeIfAbsent(matchId, id -> {
             double before = rs.percentile("constructed");
             return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
@@ -494,7 +494,7 @@ public final class FrontDoor {
                 if (qs.enabled()) {
                     JsonArray moved = qs.afterMatch(id, questMetrics(id, event));
                     earned.add("quests", moved);
-                    if (moved.toString().contains("\"inventoryUpdate\":{")) {
+                    if (ms.online() && moved.toString().contains("\"inventoryUpdate\":{")) {
                         try { ms.refresh(); } catch (java.io.IOException ignored) { }      // a finished quest paid XP: the track's state moved
                     }
                 }

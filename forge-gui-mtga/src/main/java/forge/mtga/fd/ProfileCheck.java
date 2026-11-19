@@ -147,7 +147,7 @@ public final class ProfileCheck {
             check(!api.setEmotes(List.of("Phrase_Basic_Hello", phrase, sticker)).getEmotesList().stream().anyMatch(e -> e.getId().equals(phrase)),
                     "an emote that is not owned is left out of the loadout");
             new forge.mtga.social.MasteryService(null, store, dir);
-            check(store.load().owned.all, "an offline start (no account) owns everything again");
+            check(!store.load().owned.all && new File(dir, "mastery-offline.json").isFile(), "an offline start uses earned ownership and its own mastery save");
         }
         store.update(p -> p.owned.all = true);
 

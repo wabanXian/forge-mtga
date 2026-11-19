@@ -21,7 +21,7 @@ final class DailyQuests {
 
     DailyQuests(QuestService service) { this.service = service; }
 
-    boolean enabled() { return service != null && service.online(); }
+    boolean enabled() { return service != null && service.enabled(); }
 
     /** QuestGetQuests: the last known list (answered at once), refreshed in the background for the next time. */
     JsonObject collection() {

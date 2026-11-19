@@ -49,11 +49,11 @@ public final class ForgeMtgaMain {
         } else if (!"spike".equals(System.getProperty("mtga.social"))) {
             System.setProperty("mtga.social", "off");
         }
-        // Mastery (coordinator): the track and the cosmetics granted so far go into profile.json before the client reads it; offline = everything owned
+        // Mastery: coordinator state online, independent atomic mastery-offline.json offline; both write their own earned cosmetics into profile.json.
         forge.mtga.social.CoordinatorSession session = accounts == null ? null : new forge.mtga.social.CoordinatorSession(accounts, profileStore);
         forge.mtga.social.MasteryService mastery = new forge.mtga.social.MasteryService(session, profileStore, dataDir);
         mastery.sync();
-        if (mastery.online()) System.out.println("[mtga] mastery: level " + mastery.level() + " (" + mastery.xp() + " XP), track " + mastery.track().size() + " levels");
+        System.out.println("[mtga] mastery " + (mastery.online() ? "online" : "offline") + ": level " + mastery.level() + " (" + mastery.xp() + " XP), track " + mastery.track().size() + " rewards");
         forge.mtga.profile.Profile me = profileStore.load();
         System.setProperty("mtga.name", me.displayName);       // the Match Door and the engine seats use it
         System.out.println("[mtga] profile: " + me.clientName() + " (" + me.playerId + ")");
@@ -83,7 +83,7 @@ public final class ForgeMtgaMain {
             fd.setSocial(social);
             if (accounts != null) fd.setResults(new forge.mtga.social.ResultReporter(accounts, profileStore));
             fd.setMastery(mastery);
-            forge.mtga.social.QuestService quests = new forge.mtga.social.QuestService(session);
+            forge.mtga.social.QuestService quests = new forge.mtga.social.QuestService(session, mastery);
             quests.refresh();
             fd.setQuests(quests);
             if (accounts != null) fd.setRank(new forge.mtga.social.RankService(session, profileStore, dataDir));

@@ -22,8 +22,8 @@ import java.util.List;
  *
  * <p>The coordinator owns XP and grants; this side keeps a cache in {@code data/mastery.json} (answers at once, used when the coordinator
  * cannot be reached) and writes the ownership into {@code profile.json}: online, {@code owned.all} is off and the owned lists are the grants
- * (the always-owned set is added by the profile code). Without an account (offline start) {@code owned.all} is on: everything unlocked,
- * no track. {@code claimedLevel} is local and only drives the client's reward popups: rewards of levels above it are shown as
+ * (the always-owned set is added by the profile code). Without an account, the separate atomic {@code data/mastery-offline.json} owns XP,
+ * quests, deduplication and earned cosmetics. {@code claimedLevel} only drives the client's reward popups: rewards of levels above it are shown as
  * claimable, the client claims them (GraphProcessV2) and the popup shows the cosmetic.
  */
 public final class MasteryService {
@@ -33,16 +33,21 @@ public final class MasteryService {
     private final CoordinatorSession session;
     private final FileProfileStore profiles;
     private final File cacheFile;
+    private final OfflineProgressStore offline;
     private JsonObject cache;          // {track: {version, items}, progress: {xp, level, owned...}, claimedLevel}
 
-    /** {@code session} null = offline: everything owned, no track. */
+    /** {@code session} null = the independent offline track in mastery-offline.json. */
     public MasteryService(CoordinatorSession session, FileProfileStore profiles, File dataDir) {
         this.session = session;
         this.profiles = profiles;
         this.cacheFile = dataDir == null ? null : new File(dataDir, "mastery.json");
+        this.offline = session == null && dataDir != null ? new OfflineProgressStore(dataDir) : null;
         this.cache = session == null ? new JsonObject() : read();
         if (session == null) {
-            if (profiles != null && !profiles.load().owned.all) profiles.update(p -> p.owned.all = true);
+            if (offline != null && profiles != null) {
+                offline.rememberOwnership(GSON.toJsonTree(profiles.load().owned).getAsJsonObject());
+                applyOwnership();
+            }
         } else {
             applyOwnership();                                    // the last known grants, before the client asks
         }
@@ -51,7 +56,7 @@ public final class MasteryService {
     public boolean online() { return session != null; }
 
     /** The track is known (cached or fetched): the Front Door serves the mastery graph. */
-    public synchronized boolean hasTrack() { return online() && cache.has("track"); }
+    public synchronized boolean hasTrack() { return offline != null || cache.has("track"); }
 
     /** At server start: fetch the track (when its version changed) and the progress; blocking, a few seconds at most. */
     public void sync() {
@@ -78,26 +83,29 @@ public final class MasteryService {
     /** The track's items: {kind, cosmetic id}; level n gives items[n-1]. */
     public synchronized List<String[]> track() {
         List<String[]> out = new ArrayList<>();
-        if (!cache.has("track")) return out;
-        for (JsonElement e : cache.getAsJsonObject("track").getAsJsonArray("items")) {
+        JsonObject t = offline != null ? offline.track() : cache.has("track") ? cache.getAsJsonObject("track") : null;
+        if (t == null) return out;
+        for (JsonElement e : t.getAsJsonArray("items")) {
             JsonArray a = e.getAsJsonArray();
             out.add(new String[] {a.get(0).getAsString(), a.get(1).getAsString()});
         }
         return out;
     }
 
-    public synchronized int xp() { return progress().has("xp") ? progress().get("xp").getAsInt() : 0; }
+    public synchronized int xp() { return offline != null ? offline.xp() : progress().has("xp") ? progress().get("xp").getAsInt() : 0; }
 
-    public synchronized int level() { return progress().has("level") ? progress().get("level").getAsInt() : 0; }
+    public synchronized int level() { return offline != null ? offline.level() : progress().has("level") ? progress().get("level").getAsInt() : 0; }
 
     /** Levels whose reward the client has shown (first start: the current level, so a returning player gets no flood of popups). */
     public synchronized int claimedLevel() {
+        if (offline != null) return offline.claimedLevel();
         if (!cache.has("claimedLevel")) return level();
         return cache.get("claimedLevel").getAsInt();
     }
 
     /** The client claimed the rewards of these levels: they are shown from now on as taken. */
     public synchronized void claimed(int upToLevel) {
+        if (offline != null) { offline.claimed(upToLevel); return; }
         cache.addProperty("claimedLevel", Math.max(claimedLevel(), Math.min(upToLevel, level())));
         write();
     }
@@ -108,6 +116,7 @@ public final class MasteryService {
 
     /** A local bot match finished: its XP (0 when capped or offline). */
     public int botMatch(String matchId) {
+        if (offline != null) { int gained = offline.botMatch(matchId); applyOwnership(); return gained; }
         if (session == null) return 0;
         JsonObject body = new JsonObject();
         body.addProperty("match", matchId.length() > 80 ? matchId.substring(0, 80) : matchId);
@@ -128,6 +137,7 @@ public final class MasteryService {
      * 0 when it was paid before, offline or on an error. The progress is re-read when XP was paid.
      */
     public int eventReward(String event) {
+        if (offline != null) { int gained = offline.eventReward(event); applyOwnership(); return gained; }
         if (session == null) return 0;
         JsonObject body = new JsonObject();
         body.addProperty("event", event);
@@ -184,8 +194,8 @@ public final class MasteryService {
         if (profiles == null) return;
         JsonObject owned;
         synchronized (this) {
-            JsonObject p = progress();
-            owned = p.has("owned") ? p.getAsJsonObject("owned") : new JsonObject();
+            if (offline != null) owned = offline.owned();
+            else { JsonObject p = progress(); owned = p.has("owned") ? p.getAsJsonObject("owned") : new JsonObject(); }
         }
         List<List<String>> lists = new ArrayList<>();
         for (String k : LISTS) {
@@ -204,6 +214,15 @@ public final class MasteryService {
             p.owned.emotes = lists.get(3);
             p.owned.titles = lists.get(4);
         });
+    }
+
+    JsonArray offlineQuests() { return offline == null ? new JsonArray() : offline.quests(); }
+    boolean offlineSwap(String questId) { return offline != null && offline.swap(questId); }
+    JsonArray offlineQuestProgress(String matchId, JsonObject metrics) {
+        if (offline == null) return new JsonArray();
+        JsonArray updates = offline.progress(matchId, metrics);
+        applyOwnership();
+        return updates;
     }
 
     private JsonObject read() {
